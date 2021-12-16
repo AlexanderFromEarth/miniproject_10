@@ -7,6 +7,7 @@ import edu.coursera.distributed.util.MPI.MPIException;
  * A wrapper class for a parallel, MPI-based matrix multiply implementation.
  */
 public class MatrixMult {
+    private static final int master = 0;
     /**
      * A parallel implementation of matrix multiply using MPI to express SPMD
      * parallelism. In particular, this method should store the output of
@@ -50,16 +51,63 @@ public class MatrixMult {
      *                      implementation should throw any MPI errors during
      *                      normal operation.
      */
-    public static void parallelMatrixMultiply(Matrix a, Matrix b, Matrix c,
-            final MPI mpi) throws MPIException {
-        for (int i = 0; i < c.getNRows(); i++) {
-            for (int j = 0; j < c.getNCols(); j++) {
-                c.set(i, j, 0.0);
+    public static void parallelMatrixMultiply(
+            Matrix a,
+            Matrix b,
+            Matrix c,
+            final MPI mpi
+    ) throws MPIException {
+        final int rank = mpi.MPI_Comm_rank(mpi.MPI_COMM_WORLD);
+        final int workers = mpi.MPI_Comm_size(mpi.MPI_COMM_WORLD);
+        final int rows = a.getNRows() / workers;
 
-                for (int k = 0; k < b.getNRows(); k++) {
-                    c.incr(i, j, a.get(i, k) * b.get(k, j));
+        if (rank == master) {
+            for (int i = 1; i < workers; i++) {
+                final int offset = a.getOffsetOfRow(i * rows);
+                final int count = a.getNCols() * rows;
+
+                mpi.MPI_Send(a.getValues(), offset, count, i, 1, mpi.MPI_COMM_WORLD);
+                mpi.MPI_Send(b.getValues(), 0, b.getNRows() * b.getNCols(), i, 2, mpi.MPI_COMM_WORLD);
+            }
+
+            for (int i = 0; i < rows; i++) {
+                for (int j = 0; j < c.getNCols(); j++) {
+                    c.set(i, j, 0.0);
+
+                    for (int k = 0; k < b.getNRows(); k++) {
+                        c.incr(i, j, a.get(i, k) * b.get(k, j));
+                    }
                 }
             }
+
+            for (int i = 1; i < workers; i++) {
+                final int offset = c.getOffsetOfRow(i * rows);
+                final int count = c.getNCols() * rows;
+
+                mpi.MPI_Recv(c.getValues(), offset, count, i, 3, mpi.MPI_COMM_WORLD);
+            }
+        } else {
+            final int receivedOffset = a.getOffsetOfRow(rank * rows);
+            final int receivedCount = a.getNCols() * rows;
+
+            mpi.MPI_Recv(a.getValues(), receivedOffset, receivedCount, 0, 1, mpi.MPI_COMM_WORLD);
+            mpi.MPI_Recv(b.getValues(), 0, b.getNCols() * b.getNRows(), 0, 2, mpi.MPI_COMM_WORLD);
+
+
+            for (int i = rank * rows; i < (rank + 1) * rows; i++) {
+                for (int j = 0; j < c.getNCols(); j++) {
+                    c.set(i, j, 0.0);
+
+                    for (int k = 0; k < b.getNRows(); k++) {
+                        c.incr(i, j, a.get(i, k) * b.get(k, j));
+                    }
+                }
+            }
+
+            final int sentOffset = c.getOffsetOfRow(rank * rows);
+            final int sentCount = c.getNCols() * rows;
+
+            mpi.MPI_Send(c.getValues(), sentOffset, sentCount, 0, 3, mpi.MPI_COMM_WORLD);
         }
     }
 }
